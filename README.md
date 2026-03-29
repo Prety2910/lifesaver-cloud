@@ -1,57 +1,28 @@
-# lifesaver.com
-A cloud-based emergency alert web app with real-time location tracking, SOS system, and WhatsApp integration using Firebase.
-# 🚨 LifeSaver Cloud
+---
 
-A cloud-based emergency alert web application that helps users quickly send SOS alerts with live location to their emergency contacts.
+## ⚠️ Note
+
+- Google Maps API key is restricted for security
+- WhatsApp alerts use `wa.me` links (frontend-based)
+- SMS automation can be added using Twilio (future scope)
 
 ---
 
-## 🌐 Live Demo
-👉 https://lifesaver-cloud.web.app
+## 🚀 Future Enhancements
+
+- 📩 SMS alerts using Twilio API
+- 📞 Auto-call emergency feature
+- 📍 Live location sharing in real-time
+- 📊 Admin dashboard for monitoring alerts
 
 ---
 
-## ✨ Features
+## 👩‍💻 Author
 
-- 🔐 User Authentication (Firebase Auth)
-- 📍 Real-time Location Tracking (Google Maps API)
-- 🚨 SOS Emergency Alert System
-- 📲 WhatsApp Integration for instant alerts
-- 🔊 Siren + Button Animation for emergency trigger
-- 👥 Emergency Contact Management
-- 🗄️ Cloud Database (Firestore)
-- 📜 Alert History Tracking
-- 🌍 Deployed using Firebase Hosting
+Prety Sharma
 
 ---
 
-## 🛠️ Tech Stack
+## ⭐ If you like this project
 
-- HTML, CSS, JavaScript
-- Firebase Authentication
-- Cloud Firestore
-- Google Maps JavaScript API
-- Firebase Hosting
-
----
-
-## 🚀 How it Works
-
-1. User logs in / signs up
-2. Adds emergency contacts
-3. System fetches live location
-4. On pressing SOS:
-   - Siren is triggered
-   - Location is captured
-   - Alert message is generated
-   - WhatsApp opens with pre-filled message
-   - Alert is stored in Firestore
-
----
-
-## 📁 Project Structure
-├── index.html
-├── style.css
-├── app.js
-├── firebase-config.js
-├── siren.mp3
+Give it a star ⭐ on GitHub!
