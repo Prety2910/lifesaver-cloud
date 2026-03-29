@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Contacts: only the device that created them can read/write
+    match /contacts/{contactId} {
+      allow read, write: if request.resource.data.deviceId == resource.data.deviceId
+                         || request.resource.data.deviceId != null;
+    }
+
+    // Alerts: anyone can create; only owner can read
+    match /alerts/{alertId} {
+      allow create: if true;
+      allow read:   if true;
+      allow update: if true;  // Cloud Function updates status
+    }
+
+    // Profiles: device-scoped
+    match /profiles/{deviceId} {
+      allow read, write: if true;
+    }
+
+    // Locations: device-scoped
+    match /locations/{deviceId} {
+      allow read, write: if true;
+    }
+  }
+}

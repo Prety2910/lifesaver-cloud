@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>LifeSaver Cloud – Smart Emergency Alert System</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+  <body>
+
+  <!-- your entire app UI -->
+
+  <!-- 🔊 SIREN SOUND -->
+  <audio id="sirenSound" src="siren.mp3" preload="auto"></audio>
+
+  <!-- your scripts -->
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+
+</body>
+
+  <!-- AUTH -->
+  <div id="authSection" class="auth-box">
+  <div id="authForm">
+    <h2>Login / Sign Up</h2>
+    <input id="email" type="email" placeholder="Enter email" autocomplete="email" />
+    <input id="password" type="password" placeholder="Enter password" autocomplete="current-password" />
+    <div class="auth-actions">
+      <button type="button" onclick="signup()">Sign Up</button>
+      <button type="button" onclick="login()">Login</button>
+    </div>
+    <p id="authStatus">Not logged in</p>
+  </div>
+
+  <div id="loggedInBar" class="hidden">
+    <span id="loggedInText">Logged in</span>
+    <button type="button" onclick="logout()">Logout</button>
+  </div>
+</div>
+
+  <!-- NAV -->
+  <nav class="navbar">
+    <div class="logo">
+      <span class="logo-icon">🛡</span>
+      <span class="logo-text">LifeSaver<span class="accent">Cloud</span></span>
+    </div>
+
+    <div class="nav-links">
+      <a href="#dashboard" class="nav-link active" data-page="dashboard">Dashboard</a>
+      <a href="#contacts" class="nav-link" data-page="contacts">Contacts</a>
+      <a href="#history" class="nav-link" data-page="history">History</a>
+      <a href="#profile" class="nav-link" data-page="profile">Profile</a>
+    </div>
+
+    <div class="nav-status">
+      <span class="status-dot"></span>
+      <span id="statusText">Protected</span>
+    </div>
+  </nav>
+
+  <!-- DASHBOARD -->
+  <section id="dashboard" class="page active">
+    <div class="page-grid">
+
+      <!-- Left Column -->
+      <div class="left-col">
+        <div class="greeting-card">
+          <p class="greeting-sub">Good to see you,</p>
+          <h1 class="greeting-name" id="userName">Buddy</h1>
+          <p class="greeting-msg">Your emergency system is <strong>active</strong> and monitoring.</p>
+        </div>
+
+        <!-- PANIC BUTTON -->
+        <div class="panic-wrap">
+          <div class="panic-ring ring3"></div>
+          <div class="panic-ring ring2"></div>
+          <div class="panic-ring ring1"></div>
+          <button id="panicBtn" class="panic-btn" type="button" onclick="triggerAlert()">
+            <span class="panic-label">SOS</span>
+            <span class="panic-sub">Hold to alert</span>
+          </button>
+        </div>
+
+        <!-- QUICK STATS -->
+        <div class="stat-row">
+          <div class="stat-card">
+            <span class="stat-num" id="contactCount">0</span>
+            <span class="stat-label">Contacts</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-num" id="alertCount">0</span>
+            <span class="stat-label">Alerts Sent</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-num">24/7</span>
+            <span class="stat-label">Monitoring</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column -->
+      <div class="right-col">
+        <div class="map-card">
+          <div class="map-header">
+            <span>📍 Live Location</span>
+            <button type="button" class="map-refresh-btn" onclick="refreshLocation()">↻ Refresh</button>
+          </div>
+          <div id="map"></div>
+          <div class="location-bar">
+            <span id="locationText">Fetching location…</span>
+            <span id="coordText" class="coords"></span>
+          </div>
+        </div>
+
+        <div id="alertStatus" class="alert-status hidden">
+          <div class="alert-inner">
+            <span class="alert-icon">🚨</span>
+            <div>
+              <p class="alert-title">ALERT SENT</p>
+              <p class="alert-msg" id="alertMsg">Notifying your emergency contacts…</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- CONTACTS -->
+  <section id="contacts" class="page">
+    <div class="page-inner">
+      <div class="page-head">
+        <h2>Emergency Contacts</h2>
+        <button type="button" class="btn-primary" onclick="openModal()">+ Add Contact</button>
+      </div>
+      <div id="contactsList" class="contacts-grid"></div>
+    </div>
+  </section>
+
+  <!-- HISTORY -->
+  <section id="history" class="page">
+    <div class="page-inner">
+      <div class="page-head">
+        <h2>Alert History</h2>
+      </div>
+      <div id="historyList" class="history-list"></div>
+    </div>
+  </section>
+
+  <!-- PROFILE -->
+  <section id="profile" class="page">
+    <div class="page-inner">
+      <div class="page-head">
+        <h2>Your Profile</h2>
+      </div>
+
+      <div class="profile-card">
+        <div class="avatar-wrap">
+          <div class="avatar" id="avatarInitial">A</div>
+        </div>
+
+        <div class="profile-form">
+          <div class="form-group">
+            <label for="profileName">Full Name</label>
+            <input type="text" id="profileName" placeholder="Your name" />
+          </div>
+
+          <div class="form-group">
+            <label for="profilePhone">Phone Number</label>
+            <input type="tel" id="profilePhone" placeholder="+91 XXXXX XXXXX" />
+          </div>
+
+          <div class="form-group">
+            <label for="profileMedical">Medical Info (optional)</label>
+            <textarea id="profileMedical" placeholder="Blood group, allergies, conditions…"></textarea>
+          </div>
+
+          <button type="button" class="btn-primary" onclick="saveProfile()">Save Profile</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ADD CONTACT MODAL -->
+  <div id="modal" class="modal-overlay hidden">
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Add Emergency Contact</h3>
+        <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+
+      <div class="form-group">
+        <label for="cName">Name</label>
+        <input type="text" id="cName" placeholder="Contact name" />
+      </div>
+
+      <div class="form-group">
+        <label for="cPhone">Phone</label>
+        <input type="tel" id="cPhone" placeholder="+91 XXXXX XXXXX" />
+      </div>
+
+      <div class="form-group">
+        <label for="cEmail">Email</label>
+        <input type="email" id="cEmail" placeholder="email@example.com" />
+      </div>
+
+      <div class="form-group">
+        <label for="cRelation">Relationship</label>
+        <select id="cRelation">
+          <option>Family</option>
+          <option>Friend</option>
+          <option>Doctor</option>
+          <option>Colleague</option>
+          <option>Neighbour</option>
+        </select>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn-ghost" onclick="closeModal()">Cancel</button>
+        <button type="button" class="btn-primary" onclick="addContact()">Add Contact</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOAST -->
+  <div id="toast" class="toast hidden"></div>
+
+  <!-- GOOGLE MAPS -->
+<script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCYiHRGXwAjgkFA86_GbON0h9dSDTi1rJ8&callback=initMap" async defer></script>
+  <!-- FIREBASE -->
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
+
+  <!-- APP FILES -->
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
