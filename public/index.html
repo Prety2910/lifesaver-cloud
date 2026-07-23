@@ -7,19 +7,17 @@
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
 
   <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
   <meta name="theme-color" content="#e8192c" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 
-  <link rel="stylesheet" href="style.css"/>
+  <link rel="stylesheet" href="css/style.css"/>
 </head>
 <body>
-  <!-- Ambient Background Glows -->
-  <div class="ambient-glow glow-1"></div>
-  <div class="ambient-glow glow-2"></div>
-  <div class="ambient-glow glow-3"></div>
-
   <!-- AUTH -->
   <div id="authSection" class="auth-box">
     <div id="authForm">
@@ -49,9 +47,16 @@
     <div class="nav-links">
       <a href="#dashboard" class="nav-link active" data-page="dashboard">Dashboard</a>
       <a href="#contacts" class="nav-link" data-page="contacts">Contacts</a>
+      <a href="#family" class="nav-link" data-page="family">Family</a>
       <a href="#history" class="nav-link" data-page="history">History</a>
       <a href="#profile" class="nav-link" data-page="profile">Profile</a>
     </div>
+
+    <span id="shakeWaveIndicator" class="shake-wave hidden" title="Shake-to-SOS is active">
+      <span></span><span></span><span></span>
+    </span>
+
+    <button type="button" id="installAppBtn" class="btn-install hidden">📲 Install App</button>
 
     <div class="nav-status">
       <span class="status-dot"></span>
@@ -69,25 +74,27 @@
           <p class="greeting-msg">Your emergency system is <strong>active</strong> and monitoring.</p>
         </div>
 
-        <div class="panic-wrap">
-          <div class="panic-ring ring3"></div>
-          <div class="panic-ring ring2"></div>
-          <div class="panic-ring ring1"></div>
-          <button id="panicBtn" class="panic-btn" type="button" onclick="triggerAlert()">
+        <div id="panicWrap" class="panic-wrap">
+          <canvas id="radarCanvas" class="radar-canvas" aria-hidden="true"></canvas>
+          <svg class="sos-ring-svg" viewBox="0 0 160 160" aria-hidden="true">
+            <circle class="sos-ring-track" cx="80" cy="80" r="72"></circle>
+            <circle id="sosRingProgress" class="sos-ring-progress" cx="80" cy="80" r="72"></circle>
+          </svg>
+          <span id="countdownNumber" class="countdown-number hidden">5</span>
+          <button id="panicBtn" class="panic-btn" type="button" onclick="startSosCountdown()">
             <span class="panic-label">SOS</span>
             <span class="panic-sub">Tap to alert</span>
           </button>
         </div>
+
         <div class="sos-actions">
-          <button type="button" class="btn-primary" onclick="enablePushNotifications()">🔔 Enable Push</button>
-          <button type="button" class="btn-primary" onclick="startLiveTracking()">📍 Start Live Tracking</button>
-          <button type="button" class="btn-ghost" onclick="stopLiveTracking()">⏹ Stop Tracking</button>
-          <button type="button" class="btn-ghost" onclick="shareLiveTrackingLink()">🔗 Share Tracking Link</button>
-          <button type="button" class="btn-warning fake-call-btn" onclick="scheduleFakeCall()">📱 Fake Call (10s)</button>
+          <button type="button" class="btn-primary" onclick="enablePushNotifications()">🔔 Enable Push Notifications</button>
+          <button type="button" id="enableMotionBtn" class="btn-primary" onclick="LifeSaverMotion.requestPermission()">🎯 Enable Fall &amp; Shake Detection</button>
         </div>
 
         <div class="sos-actions">
           <button type="button" class="btn-primary" onclick="callPrimaryContact()">📞 Call Emergency Contact</button>
+          <button type="button" class="btn-warning fake-call-btn" onclick="scheduleFakeCall()">📱 Fake Call (10s)</button>
           <label class="send-toggle">
             <input type="checkbox" id="sendAllToggle" checked />
             Send to all contacts
@@ -97,9 +104,6 @@
             Low network mode
           </label>
         </div>
-        <button class="btn-primary" onclick="enablePush()" style="margin-top:15px;">
-  🔔 Enable Push Notifications
-</button>
 
         <div class="stat-row">
           <div class="stat-card">
@@ -115,18 +119,39 @@
             <span class="stat-label">Network</span>
           </div>
         </div>
+
+        <!-- Feature 8: AI check-in widget -->
+        <div class="checkin-widget">
+          <div class="checkin-widget-head">
+            <span>🤖 AI Safety Check-in</span>
+            <span id="checkinStatusBadge" class="checkin-badge neutral">No check-ins yet</span>
+          </div>
+          <p id="checkinTime" class="checkin-time"></p>
+          <button type="button" class="btn-ghost" onclick="LifeSaverCheckin.openCheckinModal()">Check in now</button>
+        </div>
+
+        <!-- Feature 4: live accelerometer graph -->
+        <div class="motion-chart-card">
+          <div class="motion-chart-head">Live Accelerometer</div>
+          <canvas id="motionChart" height="110"></canvas>
+        </div>
       </div>
 
       <div class="right-col">
         <div class="map-card">
           <div class="map-header">
-            <span>📍 Live Location</span>
+            <span>Live Location &amp; Family Map</span>
             <button type="button" class="map-refresh-btn" onclick="refreshLocation()">↻ Refresh</button>
           </div>
-          <div id="map"></div>
+          <div class="map-container">
+            <div id="map"></div>
+            <div class="coord-pill">
+              <span class="coord-pill-dot"></span>
+              <span id="coordText" class="coord-pill-text"></span>
+            </div>
+          </div>
           <div class="location-bar">
             <span id="locationText">Fetching location…</span>
-            <span id="coordText" class="coords"></span>
           </div>
         </div>
 
@@ -139,7 +164,7 @@
             </div>
           </div>
         </div>
-        
+
         <div id="audioRecording" class="audio-recording hidden">
           <span class="pulse-red"></span>
           <span>Recording audio...</span>
@@ -156,6 +181,16 @@
         <button type="button" class="btn-primary" onclick="openModal()">+ Add Contact</button>
       </div>
       <div id="contactsList" class="contacts-grid"></div>
+    </div>
+  </section>
+
+  <!-- FAMILY (Feature 6) -->
+  <section id="family" class="page">
+    <div class="page-inner">
+      <div class="page-head">
+        <h2>Family Safety Group</h2>
+      </div>
+      <div id="familyPanel"></div>
     </div>
   </section>
 
@@ -198,11 +233,25 @@
           </div>
 
           <div class="twilio-info-box">
-            <h4>Twilio SMS Configuration</h4>
-            <p>To enable background SMS, configure <code>TWILIO_ACCOUNT_SID</code>, <code>TWILIO_AUTH_TOKEN</code>, and <code>TWILIO_PHONE_NUMBER</code> in your Vercel Environment Variables.</p>
+            <h4>Backend Configuration</h4>
+            <p>SMS (Twilio), email, FCM push, and the AI check-in classifier all run from Firebase Cloud Functions. See <code>README.md</code> for the <code>firebase functions:secrets:set</code> steps.</p>
           </div>
 
           <button type="button" class="btn-primary" onclick="saveProfile()">Save Profile</button>
+
+          <!-- Feature 5: Settings panel -->
+          <div class="settings-panel">
+            <h4>Settings</h4>
+            <label class="send-toggle settings-toggle-row">
+              <input type="checkbox" id="shakeToggle" />
+              Enable shake-to-SOS
+            </label>
+            <div class="sensitivity-row">
+              <label for="shakeSensitivity">Shake sensitivity: <span id="shakeSensitivityLabel">Medium</span></label>
+              <input type="range" id="shakeSensitivity" min="0" max="2" step="1" value="1" />
+              <div class="sensitivity-scale"><span>Low</span><span>Medium</span><span>High</span></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -263,11 +312,16 @@
   <audio id="sirenSound" src="siren.mp3" preload="auto"></audio>
 
   <script src="https://maps.googleapis.com/maps/api/js?key=AIzaSyCYiHRGXwAjgkFA86_GbON0h9dSDTi1rJ8&callback=initMap" async defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-firestore.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-auth.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-messaging.js"></script>
-  <script src="firebase-config.js"></script>
-  <script src="app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-functions.js"></script>
+  <script src="js/firebase-config.js"></script>
+  <script src="js/app.js"></script>
+  <script src="js/motion-detection.js"></script>
+  <script src="js/ai-checkin.js"></script>
+  <script src="js/pwa.js"></script>
 </body>
 </html>

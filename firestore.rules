@@ -2,27 +2,67 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Contacts: only the device that created them can read/write
-    match /contacts/{contactId} {
-      allow read, write: if request.resource.data.deviceId == resource.data.deviceId
-                         || request.resource.data.deviceId != null;
+    // ─── Per-user data ───────────────────────────
+    match /users/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+
+      match /contacts/{contactId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // Alerts: the owner can create/read; status updates ('notified',
+      // 'ai-triggered', etc.) are written server-side by Cloud Functions
+      // using the Admin SDK, which bypasses these rules entirely.
+      match /alerts/{alertId} {
+        allow read, create: if request.auth != null && request.auth.uid == uid;
+        allow update, delete: if false;
+      }
+
+      match /meta/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // FCM tokens (Feature 3) — only the owning device manages its own tokens.
+      match /tokens/{tokenId} {
+        allow read, write: if request.auth != null && request.auth.uid == uid;
+      }
+
+      // AI check-in log (Feature 8) — written only by the classifyCheckin
+      // Cloud Function (Admin SDK); the owner may read their own history.
+      match /checkins/{checkinId} {
+        allow read: if request.auth != null && request.auth.uid == uid;
+        allow write: if false;
+      }
     }
 
-    // Alerts: anyone can create; only owner can read
-    match /alerts/{alertId} {
-      allow create: if true;
-      allow read:   if true;
-      allow update: if true;  // Cloud Function updates status
-    }
+    // ─── Family Safety Groups (Feature 6) ────────
+    match /groups/{code} {
+      allow read: if request.auth != null;
 
-    // Profiles: device-scoped
-    match /profiles/{deviceId} {
-      allow read, write: if true;
-    }
+      allow create: if request.auth != null
+                    && request.resource.data.ownerUid == request.auth.uid
+                    && request.resource.data.members[request.auth.uid] != null;
 
-    // Locations: device-scoped
-    match /locations/{deviceId} {
-      allow read, write: if true;
+      // Joining/leaving only ever touches the `members` map.
+      allow update: if request.auth != null
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['members']);
+
+      allow delete: if false;
+
+      // Live location per member (Feature 6 map markers) — only the member
+      // themself may write their own location doc.
+      match /locations/{memberUid} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null && request.auth.uid == memberUid;
+      }
+
+      // Group-wide SOS broadcast — any member may create an entry for
+      // themself; entries are immutable once written.
+      match /alerts/{alertId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null && request.resource.data.uid == request.auth.uid;
+        allow update, delete: if false;
+      }
     }
   }
 }

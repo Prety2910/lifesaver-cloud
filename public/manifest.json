@@ -1,0 +1,19 @@
+{
+  "name": "LifeSaver Cloud",
+  "short_name": "LifeSaver",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0a0c10",
+  "theme_color": "#e8192c",
+  "description": "Smart emergency alert system with fall detection, family safety dashboard, and AI check-ins.",
+  "icons": [
+    {
+      "src": "icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

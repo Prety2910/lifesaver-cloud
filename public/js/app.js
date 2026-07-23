@@ -10,6 +10,19 @@ let contacts = [];
 let alertsSent = 0;
 let currentUser = null;
 
+// Feature 6 — family group state
+let currentGroupCode = null;
+let currentGroupColor = null;
+let groupDocUnsub = null;
+let groupLocationsUnsub = null;
+let groupAlertsUnsub = null;
+let familyMarkers = {};
+let groupAlertsSeen = new Set();
+const GROUP_COLORS = ['#e8192c', '#00e676', '#00d4ff', '#f5a623', '#c74dff', '#ff6b9d', '#7fff00', '#4dd0e1'];
+
+// Feature 2 — SOS countdown state
+let countdownState = null;
+
 // ─── Navigation ───────────────────────────────
 document.querySelectorAll('.nav-link').forEach(link => {
   link.addEventListener('click', e => {
@@ -28,9 +41,10 @@ function navigateTo(pageId) {
   if (pageId === 'contacts') renderContacts();
   if (pageId === 'history') loadHistory();
   if (pageId === 'profile') loadProfile();
+  if (pageId === 'family') renderFamilyGroupUI();
 }
 
-// ─── Network / PWA-lite ───────────────────────
+// ─── Network / offline banner support ─────────
 function updateNetworkStatus() {
   const el = document.getElementById('networkStatus');
   if (!el) return;
@@ -57,12 +71,17 @@ firebase.auth().onAuthStateChanged(async user => {
     await loadProfile();
     await loadContacts();
     await loadHistory();
+    await loadGroupMembership();
     updateCounts();
+    window.LifeSaverCheckin?.onLogin(user);
+    if (typeof window.LifeSaverPWA !== 'undefined') window.LifeSaverPWA.flushOfflineAlertsIfOnline();
     showToast('✅ Logged in');
   } else {
     currentUser = null;
     contacts = [];
     alertsSent = 0;
+    unsubscribeFromGroup();
+    currentGroupCode = null;
 
     authStatus && (authStatus.textContent = 'Not logged in');
     authForm && authForm.classList.remove('hidden');
@@ -74,6 +93,8 @@ firebase.auth().onAuthStateChanged(async user => {
     document.getElementById('alertCount').textContent = '0';
 
     renderContacts();
+    window.LifeSaverCheckin?.onLogout();
+    renderFamilyGroupUI();
     const historyList = document.getElementById('historyList');
     if (historyList) {
       historyList.innerHTML = `
@@ -124,6 +145,51 @@ function logout() {
 }
 
 // ─── Maps / Location ──────────────────────────
+
+// Lightweight custom marker (google.maps.OverlayView) so the user's own
+// location can be rendered as a real DOM node with a CSS `@keyframes ping`
+// animation — the built-in Marker/AdvancedMarkerElement classes don't
+// expose their internals to CSS. Exposes the same setPosition({lat,lng})
+// shape as google.maps.Marker so refreshLocation() doesn't need to care
+// which one it's holding.
+function createPulseMarker(position, mapInstance) {
+  class PulseMarker extends google.maps.OverlayView {
+    constructor(pos, m) {
+      super();
+      this.position = pos;
+      this.div = null;
+      this.setMap(m);
+    }
+    onAdd() {
+      this.div = document.createElement('div');
+      this.div.className = 'map-pulse-marker';
+      this.div.innerHTML = '<span class="map-pulse-ring"></span><span class="map-pulse-dot"></span>';
+      this.getPanes().overlayMouseTarget.appendChild(this.div);
+    }
+    draw() {
+      const projection = this.getProjection();
+      if (!projection || !this.div) return;
+      const point = projection.fromLatLngToDivPixel(new google.maps.LatLng(this.position.lat, this.position.lng));
+      if (point) {
+        this.div.style.left = `${point.x}px`;
+        this.div.style.top = `${point.y}px`;
+      }
+    }
+    setPosition(pos) {
+      this.position = pos;
+      this.draw();
+    }
+    onRemove() {
+      if (this.div) {
+        this.div.remove();
+        this.div = null;
+      }
+    }
+  }
+
+  return new PulseMarker(position, mapInstance);
+}
+
 function initMap() {
   const mapDiv = document.getElementById('map');
   if (!mapDiv) return;
@@ -147,20 +213,7 @@ function initMap() {
     fullscreenControl: true
   });
 
-  marker = new google.maps.Marker({
-    position: defaultCoords,
-    map,
-    title: 'Your Location',
-    icon: {
-      path: google.maps.SymbolPath.CIRCLE,
-      scale: 10,
-      fillColor: '#e8192c',
-      fillOpacity: 1,
-      strokeColor: '#fff',
-      strokeWeight: 2
-    },
-    animation: google.maps.Animation.DROP
-  });
+  marker = createPulseMarker(defaultCoords, map);
 
   refreshLocation();
 }
@@ -272,6 +325,17 @@ function saveLocationToFirestore(lat, lng) {
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     })
     .catch(err => console.error('Location save error:', err));
+
+  if (currentGroupCode) {
+    const displayName = document.getElementById('profileName')?.value.trim() || currentUser.email || 'Family member';
+    db.collection('groups').doc(currentGroupCode).collection('locations').doc(currentUser.uid).set({
+      lat,
+      lng,
+      name: displayName,
+      color: currentGroupColor || GROUP_COLORS[0],
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }).catch(err => console.error('Group location save error:', err));
+  }
 }
 
 // ─── SOS helpers ──────────────────────────────
@@ -311,42 +375,6 @@ function sendSmartWhatsApp(message) {
   });
 }
 
-async function sendSMSToAll(message) {
-  const sendAll = document.getElementById('sendAllToggle')?.checked;
-  const selected = sendAll ? sortContactsByPriority() : sortContactsByPriority().filter(c => c.priority === 'primary');
-
-  if (!selected.length) {
-    showToast('❌ No contact available for SMS');
-    return;
-  }
-
-  const phoneNumbers = selected.map(contact => contact.phone).filter(Boolean);
-
-  try {
-    const response = await fetch('/api/send-sms', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ message, contacts: phoneNumbers })
-    });
-
-    const data = await response.json();
-    if (response.ok) {
-      showToast('✅ SMS sent successfully via Twilio');
-    } else {
-      console.error('Twilio Error:', data.error);
-      showToast('❌ SMS backend error. Check config.');
-      // Fallback to native SMS
-      fallbackNativeSMS(message, phoneNumbers);
-    }
-  } catch (err) {
-    console.error('Failed to call SMS backend:', err);
-    // Fallback to native SMS
-    fallbackNativeSMS(message, phoneNumbers);
-  }
-}
-
 function fallbackNativeSMS(message, phoneNumbers) {
   const encoded = encodeURIComponent(message);
   phoneNumbers.forEach(phone => {
@@ -379,8 +407,90 @@ function cacheEmergencyData() {
   }));
 }
 
-// ─── Trigger Alert ────────────────────────────
-async function triggerAlert() {
+// ─── Feature 2: SOS countdown (cancel window) ─
+// SVG ring drains via a pure CSS stroke-dashoffset transition (started/
+// reset from here); the center number and the 5s completion are driven by
+// a plain interval/timeout so they stay perfectly in sync with the ring.
+const SOS_RING_CIRCUMFERENCE = 2 * Math.PI * 72;
+
+function startSosCountdown(opts = {}) {
+  if (countdownState) {
+    cancelSosCountdown();
+    return;
+  }
+  if (!currentUser) return showToast('⚠️ Please log in first');
+  if (contacts.length === 0) return showToast('⚠️ Add at least one emergency contact first');
+
+  const wrap = document.getElementById('panicWrap');
+  const btn = document.getElementById('panicBtn');
+  const ring = document.getElementById('sosRingProgress');
+  const numberEl = document.getElementById('countdownNumber');
+
+  if (!wrap || !btn) { triggerAlert(opts); return; }
+
+  let remaining = 5;
+
+  wrap.classList.add('counting');
+  btn.classList.add('counting');
+  if (numberEl) {
+    numberEl.textContent = String(remaining);
+    numberEl.classList.remove('hidden');
+  }
+
+  if (ring) {
+    ring.style.strokeDasharray = String(SOS_RING_CIRCUMFERENCE);
+    ring.style.transition = 'none';
+    ring.style.strokeDashoffset = '0';
+    void ring.getBoundingClientRect(); // force reflow so the transition below actually plays
+    ring.style.transition = 'stroke-dashoffset 5s linear';
+    ring.style.strokeDashoffset = String(SOS_RING_CIRCUMFERENCE);
+  }
+
+  const intervalId = setInterval(() => {
+    remaining -= 1;
+    if (remaining > 0 && numberEl) numberEl.textContent = String(remaining);
+  }, 1000);
+
+  const timeoutId = setTimeout(() => {
+    const finishedOpts = countdownState ? countdownState.opts : opts;
+    resetCountdownUI();
+    countdownState = null;
+    triggerAlert(finishedOpts);
+  }, 5000);
+
+  countdownState = { intervalId, timeoutId, opts };
+}
+
+function resetCountdownUI() {
+  const wrap = document.getElementById('panicWrap');
+  const btn = document.getElementById('panicBtn');
+  const ring = document.getElementById('sosRingProgress');
+  const numberEl = document.getElementById('countdownNumber');
+
+  wrap && wrap.classList.remove('counting');
+  btn && btn.classList.remove('counting');
+  numberEl && numberEl.classList.add('hidden');
+
+  if (ring) {
+    ring.style.transition = 'none';
+    ring.style.strokeDashoffset = '0';
+  }
+}
+
+function cancelSosCountdown() {
+  if (!countdownState) return;
+  clearInterval(countdownState.intervalId);
+  clearTimeout(countdownState.timeoutId);
+  resetCountdownUI();
+  countdownState = null;
+  if (navigator.vibrate) navigator.vibrate(120);
+  showToast('❌ SOS cancelled');
+}
+
+// ─── Trigger Alert (actual send) ──────────────
+async function triggerAlert(opts = {}) {
+  const source = opts.source || 'manual';
+
   if (!currentUser) return showToast('⚠️ Please log in first');
   if (contacts.length === 0) return showToast('⚠️ Add at least one emergency contact first');
 
@@ -391,7 +501,7 @@ async function triggerAlert() {
 
   if (btn) {
     btn.classList.add('activated');
-    setTimeout(() => btn.classList.remove('activated'), 2000);
+    setTimeout(() => btn.classList.remove('activated'), 1600); // matches 4 × 0.4s alert-pulse
   }
 
   const siren = document.getElementById('sirenSound');
@@ -410,7 +520,7 @@ async function triggerAlert() {
   const audioRec = document.getElementById('audioRecording');
   if (audioRec) {
     audioRec.classList.remove('hidden');
-    setTimeout(() => audioRec.classList.add('hidden'), 10000); // Hide after 10s
+    setTimeout(() => audioRec.classList.add('hidden'), 10000);
   }
 
   try {
@@ -420,39 +530,62 @@ async function triggerAlert() {
     cacheEmergencyData();
     copyAlertMessage(alertMessage);
 
+    const contactRefs = contacts.map(c => c.phone || c.email || c.name);
+    const lat = currentLat || 12.9716;
+    const lng = currentLng || 77.5946;
+
     if (navigator.onLine) {
       await db.collection('users')
         .doc(currentUser.uid)
         .collection('alerts')
         .add({
-          lat: currentLat || 12.9716,
-          lng: currentLng || 77.5946,
+          lat,
+          lng,
           message: alertMessage,
-          contacts: contacts.map(c => c.phone || c.email || c.name),
+          contacts: contactRefs,
           status: lowNetworkMode ? 'low-network' : 'prepared',
+          source,
           timestamp: firebase.firestore.FieldValue.serverTimestamp()
         });
+      // functions/index.js's onNewAlert trigger picks this up and sends
+      // Twilio SMS + email + FCM push to family group members automatically.
+
+      if (currentGroupCode) {
+        const displayName = document.getElementById('profileName')?.value.trim() || currentUser.email || 'A family member';
+        db.collection('groups').doc(currentGroupCode).collection('alerts').add({
+          uid: currentUser.uid,
+          name: displayName,
+          lat,
+          lng,
+          message: alertMessage,
+          source,
+          timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        }).catch(err => console.error('Group alert broadcast error:', err));
+      }
 
       alertsSent++;
       updateCounts();
       await loadHistory();
     } else {
-      const offlineAlerts = JSON.parse(localStorage.getItem('lifesaver_offline_alerts') || '[]');
-      offlineAlerts.push({
-        message: alertMessage,
-        timestamp: new Date().toISOString(),
-        status: 'offline'
-      });
-      localStorage.setItem('lifesaver_offline_alerts', JSON.stringify(offlineAlerts));
+      const idToken = await currentUser.getIdToken().catch(() => null);
+      if (idToken && window.LifeSaverPWA) {
+        await window.LifeSaverPWA.queueOfflineAlert(currentUser.uid, idToken, {
+          lat, lng, message: alertMessage, contacts: contactRefs, source
+        });
+        showToast('📡 Offline — alert queued and will send automatically once reconnected');
+      } else {
+        const offlineAlerts = JSON.parse(localStorage.getItem('lifesaver_offline_alerts') || '[]');
+        offlineAlerts.push({ message: alertMessage, timestamp: new Date().toISOString(), status: 'offline' });
+        localStorage.setItem('lifesaver_offline_alerts', JSON.stringify(offlineAlerts));
+      }
     }
 
     if (lowNetworkMode) {
-      sendSMSToAll(alertMessage);
+      fallbackNativeSMS(alertMessage, contactRefs.filter(c => /\d{6,}/.test(c)));
       showToast('🚨 Low network mode: SMS fallback opened');
     } else {
       sendSmartWhatsApp(alertMessage);
-      setTimeout(() => sendSMSToAll(alertMessage), 2000);
-      showToast('🚨 WhatsApp + SMS fallback started');
+      showToast('🚨 Alert sent — WhatsApp opened, SMS/email/push dispatching');
     }
   } catch (err) {
     console.error(err);
@@ -462,6 +595,270 @@ async function triggerAlert() {
   if (statusDiv) {
     setTimeout(() => statusDiv.classList.add('hidden'), 5000);
   }
+}
+
+// ─── Feature 3: Push notifications (FCM) ──────
+async function enablePushNotifications() {
+  if (!currentUser) return showToast('⚠️ Please log in first');
+  if (!messaging) return showToast('⚠️ Push notifications aren\'t supported in this browser');
+
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') return showToast('⚠️ Notification permission denied');
+
+    const swReg = window.LifeSaverPWA?.getFcmServiceWorkerRegistration?.();
+    const token = await messaging.getToken({
+      vapidKey: FCM_VAPID_KEY,
+      serviceWorkerRegistration: swReg
+    });
+
+    if (!token) return showToast('❌ Could not retrieve a push token');
+
+    await db.collection('users').doc(currentUser.uid).collection('tokens').doc(token).set({
+      token,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      ua: navigator.userAgent
+    });
+
+    showToast('✅ Push notifications enabled');
+  } catch (err) {
+    console.error('enablePushNotifications error:', err);
+    showToast('❌ Failed to enable push notifications (check FCM_VAPID_KEY in firebase-config.js)');
+  }
+}
+
+// ─── Feature 6: Family Safety Group ───────────
+function generateGroupCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+async function createFamilyGroup() {
+  if (!currentUser) return showToast('⚠️ Please log in first');
+
+  let code = null;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidate = generateGroupCode();
+    const doc = await db.collection('groups').doc(candidate).get();
+    if (!doc.exists) { code = candidate; break; }
+  }
+  if (!code) return showToast('❌ Could not generate a unique code — try again');
+
+  const name = document.getElementById('profileName')?.value.trim() || currentUser.email || 'Member';
+  const color = GROUP_COLORS[0];
+
+  try {
+    await db.collection('groups').doc(code).set({
+      code,
+      ownerUid: currentUser.uid,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+      members: { [currentUser.uid]: { name, color, joinedAt: new Date().toISOString() } }
+    });
+    await db.collection('users').doc(currentUser.uid).collection('meta').doc('group').set({ code, color });
+
+    currentGroupCode = code;
+    currentGroupColor = color;
+    subscribeToGroup(code);
+    renderFamilyGroupUI();
+    showToast(`✅ Family group created — share code ${code}`);
+  } catch (err) {
+    console.error('createFamilyGroup error:', err);
+    showToast('❌ Failed to create family group');
+  }
+}
+
+async function joinFamilyGroup() {
+  if (!currentUser) return showToast('⚠️ Please log in first');
+  const input = document.getElementById('joinGroupCode');
+  const code = (input?.value || '').trim();
+
+  if (!/^\d{6}$/.test(code)) return showToast('⚠️ Enter a valid 6-digit code');
+
+  try {
+    const ref = db.collection('groups').doc(code);
+    const doc = await ref.get();
+    if (!doc.exists) return showToast('❌ No family group found with that code');
+
+    const members = doc.data().members || {};
+    const usedColors = Object.values(members).map(m => m.color);
+    const color = GROUP_COLORS.find(c => !usedColors.includes(c)) || GROUP_COLORS[Object.keys(members).length % GROUP_COLORS.length];
+    const name = document.getElementById('profileName')?.value.trim() || currentUser.email || 'Member';
+
+    await ref.update({ [`members.${currentUser.uid}`]: { name, color, joinedAt: new Date().toISOString() } });
+    await db.collection('users').doc(currentUser.uid).collection('meta').doc('group').set({ code, color });
+
+    currentGroupCode = code;
+    currentGroupColor = color;
+    input.value = '';
+    subscribeToGroup(code);
+    renderFamilyGroupUI();
+    showToast('✅ Joined family group');
+  } catch (err) {
+    console.error('joinFamilyGroup error:', err);
+    showToast('❌ Failed to join family group');
+  }
+}
+
+async function leaveFamilyGroup() {
+  if (!currentUser || !currentGroupCode) return;
+  const code = currentGroupCode;
+
+  try {
+    await db.collection('groups').doc(code).update({
+      [`members.${currentUser.uid}`]: firebase.firestore.FieldValue.delete()
+    });
+    await db.collection('groups').doc(code).collection('locations').doc(currentUser.uid).delete().catch(() => {});
+    await db.collection('users').doc(currentUser.uid).collection('meta').doc('group').delete();
+
+    unsubscribeFromGroup();
+    currentGroupCode = null;
+    currentGroupColor = null;
+    clearFamilyMarkers();
+    renderFamilyGroupUI();
+    showToast('👋 Left family group');
+  } catch (err) {
+    console.error('leaveFamilyGroup error:', err);
+    showToast('❌ Failed to leave family group');
+  }
+}
+
+async function loadGroupMembership() {
+  if (!currentUser) return;
+  try {
+    const doc = await db.collection('users').doc(currentUser.uid).collection('meta').doc('group').get();
+    if (doc.exists) {
+      currentGroupCode = doc.data().code;
+      currentGroupColor = doc.data().color;
+      subscribeToGroup(currentGroupCode);
+    }
+  } catch (err) {
+    console.error('loadGroupMembership error:', err);
+  }
+}
+
+function subscribeToGroup(code) {
+  unsubscribeFromGroup();
+
+  groupDocUnsub = db.collection('groups').doc(code).onSnapshot(doc => {
+    renderFamilyGroupUI(doc.exists ? doc.data() : null);
+  });
+
+  groupLocationsUnsub = db.collection('groups').doc(code).collection('locations').onSnapshot(snapshot => {
+    renderFamilyMarkers(snapshot);
+  });
+
+  groupAlertsUnsub = db.collection('groups').doc(code).collection('alerts')
+    .orderBy('timestamp', 'desc')
+    .limit(5)
+    .onSnapshot(snapshot => {
+      snapshot.docChanges().forEach(change => {
+        if (change.type !== 'added') return;
+        const data = change.doc.data();
+        if (groupAlertsSeen.has(change.doc.id)) return;
+        groupAlertsSeen.add(change.doc.id);
+        if (data.uid === currentUser?.uid) return; // don't notify yourself
+        showToast(`🚨 ${data.name || 'A family member'} triggered SOS!`);
+      });
+    });
+}
+
+function unsubscribeFromGroup() {
+  groupDocUnsub && groupDocUnsub();
+  groupLocationsUnsub && groupLocationsUnsub();
+  groupAlertsUnsub && groupAlertsUnsub();
+  groupDocUnsub = groupLocationsUnsub = groupAlertsUnsub = null;
+  clearFamilyMarkers();
+}
+
+function clearFamilyMarkers() {
+  Object.values(familyMarkers).forEach(m => m.setMap(null));
+  familyMarkers = {};
+}
+
+function renderFamilyMarkers(snapshot) {
+  if (typeof google === 'undefined' || !google.maps || !map) return;
+
+  snapshot.docChanges().forEach(change => {
+    const uid = change.doc.id;
+    if (uid === currentUser?.uid) return; // your own marker already shown
+
+    if (change.type === 'removed') {
+      if (familyMarkers[uid]) { familyMarkers[uid].setMap(null); delete familyMarkers[uid]; }
+      return;
+    }
+
+    const data = change.doc.data();
+    if (!data.lat || !data.lng) return;
+    const pos = { lat: data.lat, lng: data.lng };
+
+    if (familyMarkers[uid]) {
+      familyMarkers[uid].setPosition(pos);
+    } else {
+      familyMarkers[uid] = new google.maps.Marker({
+        position: pos,
+        map,
+        title: data.name || 'Family member',
+        label: { text: (data.name || 'F').charAt(0).toUpperCase(), color: '#0b0d11', fontWeight: '700' },
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 9,
+          fillColor: data.color || '#00e676',
+          fillOpacity: 1,
+          strokeColor: '#fff',
+          strokeWeight: 2
+        }
+      });
+    }
+  });
+}
+
+function renderFamilyGroupUI(groupData) {
+  const panel = document.getElementById('familyPanel');
+  if (!panel) return;
+
+  if (!currentUser) {
+    panel.innerHTML = `<div class="empty-state"><div class="empty-icon">🔒</div><p>Please log in to manage your family group.</p></div>`;
+    return;
+  }
+
+  if (!currentGroupCode) {
+    panel.innerHTML = `
+      <div class="family-setup-grid">
+        <div class="family-card">
+          <h3>Create a Family Group</h3>
+          <p>Start a group and share the 6-digit code with your family.</p>
+          <button type="button" class="btn-primary" onclick="createFamilyGroup()">+ Create Group</button>
+        </div>
+        <div class="family-card">
+          <h3>Join a Family Group</h3>
+          <p>Enter the 6-digit code shared with you.</p>
+          <input type="text" id="joinGroupCode" maxlength="6" placeholder="123456" inputmode="numeric" />
+          <button type="button" class="btn-primary" onclick="joinFamilyGroup()">Join Group</button>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  db.collection('groups').doc(currentGroupCode).get().then(doc => {
+    const data = groupData || (doc.exists ? doc.data() : { members: {} });
+    const members = data.members || {};
+    const memberHtml = Object.entries(members).map(([uid, m]) => `
+      <div class="family-member-row">
+        <span class="family-color-dot" style="background:${m.color}"></span>
+        <span class="family-member-name">${escapeHtml(m.name || 'Member')}</span>
+        ${uid === currentUser.uid ? '<span class="family-you-badge">You</span>' : ''}
+      </div>
+    `).join('');
+
+    panel.innerHTML = `
+      <div class="family-card">
+        <h3>Your Family Group</h3>
+        <p class="family-code-display">Share this code: <strong>${currentGroupCode}</strong></p>
+        <div class="family-members-list">${memberHtml || '<p>No members yet.</p>'}</div>
+        <button type="button" class="btn-ghost" onclick="leaveFamilyGroup()">Leave Group</button>
+      </div>
+    `;
+  });
 }
 
 // ─── Contacts ─────────────────────────────────
@@ -629,14 +1026,23 @@ async function loadHistory() {
       return;
     }
 
+    const sourceLabels = {
+      manual: '👆 Manual',
+      'fall-detection': '🤸 Fall Detected',
+      'shake-detection': '📳 Shake Trigger',
+      'ai-checkin': '🤖 AI Check-in'
+    };
+
     historyList.innerHTML = snapshot.docs.map(doc => {
       const data = doc.data();
       const timeText = data.timestamp?.toDate ? data.timestamp.toDate().toLocaleString() : 'Just now';
+      const sourceLabel = sourceLabels[data.source] || '';
 
       return `
         <div class="history-card">
           <div class="history-header">
             <span class="status ${data.status || 'prepared'}">${escapeHtml(data.status || 'prepared')}</span>
+            ${sourceLabel ? `<span class="history-source">${sourceLabel}</span>` : ''}
             <span class="time">${escapeHtml(timeText)}</span>
           </div>
           <div class="history-message">
@@ -773,20 +1179,104 @@ function escapeHtml(str) {
   }[m]));
 }
 
+// Dark "tactical" map theme — ink/wire palette with a cyan water accent.
 function getDarkMapStyle() {
   return [
-    { elementType: 'geometry', stylers: [{ color: '#1d2c4d' }] },
-    { elementType: 'labels.text.fill', stylers: [{ color: '#8ec3b9' }] },
-    { elementType: 'labels.text.stroke', stylers: [{ color: '#1a3646' }] },
-    { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#304a7d' }] },
-    { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0e1626' }] }
+    { elementType: 'geometry', stylers: [{ color: '#0b0d11' }] },
+    { elementType: 'labels.text.stroke', stylers: [{ color: '#0b0d11' }] },
+    { elementType: 'labels.text.fill', stylers: [{ color: '#4a5278' }] },
+    { featureType: 'administrative', elementType: 'geometry', stylers: [{ color: '#2a3045' }] },
+    { featureType: 'administrative.locality', elementType: 'labels.text.fill', stylers: [{ color: '#8891b4' }] },
+    { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#13161d' }] },
+    { featureType: 'poi', elementType: 'labels.text.fill', stylers: [{ color: '#4a5278' }] },
+    { featureType: 'poi.business', stylers: [{ visibility: 'off' }] },
+    { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#1a1e28' }] },
+    { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#2a3045' }] },
+    { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#232838' }] },
+    { featureType: 'road.highway', elementType: 'geometry.stroke', stylers: [{ color: '#3a4460' }] },
+    { featureType: 'transit', stylers: [{ visibility: 'off' }] },
+    { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#0d1b24' }] },
+    { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#00d4ff' }] }
   ];
+}
+
+// ─── Signature element: rotating radar sweep behind the SOS button ──
+function initRadarSweep() {
+  const canvas = document.getElementById('radarCanvas');
+  if (!canvas || !canvas.getContext) return;
+
+  const ctx = canvas.getContext('2d');
+  const size = 260;
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = size * dpr;
+  canvas.height = size * dpr;
+  canvas.style.width = `${size}px`;
+  canvas.style.height = `${size}px`;
+  ctx.scale(dpr, dpr);
+
+  const cx = size / 2;
+  const cy = size / 2;
+  const maxR = size / 2 - 4;
+  const sweepWidth = Math.PI / 3.2;
+  let angle = 0;
+  let rafId = null;
+
+  function draw() {
+    ctx.clearRect(0, 0, size, size);
+
+    ctx.strokeStyle = 'rgba(232,25,44,0.18)';
+    ctx.lineWidth = 1;
+    [0.35, 0.6, 0.85, 1].forEach(f => {
+      ctx.beginPath();
+      ctx.arc(cx, cy, maxR * f, 0, Math.PI * 2);
+      ctx.stroke();
+    });
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, maxR, angle - sweepWidth, angle);
+    ctx.closePath();
+
+    if (typeof ctx.createConicGradient === 'function') {
+      const grad = ctx.createConicGradient(angle - sweepWidth, cx, cy);
+      grad.addColorStop(0, 'rgba(232,25,44,0)');
+      grad.addColorStop(1, 'rgba(232,25,44,0.35)');
+      ctx.fillStyle = grad;
+    } else {
+      ctx.fillStyle = 'rgba(232,25,44,0.2)';
+    }
+    ctx.fill();
+    ctx.restore();
+
+    const dotX = cx + Math.cos(angle) * maxR;
+    const dotY = cy + Math.sin(angle) * maxR;
+    ctx.beginPath();
+    ctx.fillStyle = '#e8192c';
+    ctx.shadowColor = '#e8192c';
+    ctx.shadowBlur = 8;
+    ctx.arc(dotX, dotY, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    angle += 0.018;
+    if (angle > Math.PI * 2) angle -= Math.PI * 2;
+
+    rafId = document.hidden ? null : requestAnimationFrame(draw);
+  }
+
+  draw();
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !rafId) draw();
+  });
 }
 
 // ─── Init ─────────────────────────────────────
 (function init() {
   renderContacts();
   updateNetworkStatus();
+  initRadarSweep();
 
   const saved = localStorage.getItem('lastKnownLocation');
   if (saved) {
@@ -802,10 +1292,6 @@ function getDarkMapStyle() {
   setTimeout(() => {
     if (typeof refreshLocation === 'function') refreshLocation();
   }, 1000);
-
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(() => {});
-  }
 })();
 
 // ─── Globals ──────────────────────────────────
@@ -815,6 +1301,7 @@ window.logout = logout;
 window.initMap = initMap;
 window.refreshLocation = refreshLocation;
 window.triggerAlert = triggerAlert;
+window.startSosCountdown = startSosCountdown;
 window.openModal = openModal;
 window.closeModal = closeModal;
 window.addContact = addContact;
@@ -822,11 +1309,16 @@ window.saveProfile = saveProfile;
 window.deleteContact = deleteContact;
 window.callPrimaryContact = callPrimaryContact;
 window.scheduleFakeCall = scheduleFakeCall;
+window.enablePushNotifications = enablePushNotifications;
+window.createFamilyGroup = createFamilyGroup;
+window.joinFamilyGroup = joinFamilyGroup;
+window.leaveFamilyGroup = leaveFamilyGroup;
+window.loadHistory = loadHistory;
+window.showToast = showToast;
 
 function scheduleFakeCall() {
   showToast('📱 Fake call scheduled in 10 seconds. Keep your volume up.');
   setTimeout(() => {
-    // Attempt to play a ringtone or vibrate
     if (navigator.vibrate) {
       navigator.vibrate([1000, 500, 1000, 500, 1000]);
     }
@@ -836,8 +1328,7 @@ function scheduleFakeCall() {
       siren.play().catch(() => {});
       setTimeout(() => siren.pause(), 5000);
     }
-    
-    // Create a fake incoming call UI
+
     const fakeCallUI = document.createElement('div');
     fakeCallUI.style.position = 'fixed';
     fakeCallUI.style.inset = '0';
@@ -852,7 +1343,7 @@ function scheduleFakeCall() {
       <div style="font-size: 1.2rem; color: #aaa; margin-bottom: 50px;">Incoming Call...</div>
       <div style="display: flex; gap: 40px;">
         <button id="declineCall" style="width: 70px; height: 70px; border-radius: 50%; background: #e8192c; border: none; font-size: 1.5rem; cursor: pointer;">📞</button>
-        <button id="acceptCall" style="width: 70px; height: 70px; border-radius: 50%; background: #0dff8c; border: none; font-size: 1.5rem; cursor: pointer;">📞</button>
+        <button id="acceptCall" style="width: 70px; height: 70px; border-radius: 50%; background: #00e676; border: none; font-size: 1.5rem; cursor: pointer;">📞</button>
       </div>
     `;
     document.body.appendChild(fakeCallUI);
@@ -861,11 +1352,10 @@ function scheduleFakeCall() {
       document.body.removeChild(fakeCallUI);
       if (siren) siren.pause();
     };
-    
+
     document.getElementById('acceptCall').onclick = () => {
       document.body.removeChild(fakeCallUI);
       if (siren) siren.pause();
-      // Simulate talking interface briefly
       showToast('Fake call answered.');
     };
   }, 10000);
